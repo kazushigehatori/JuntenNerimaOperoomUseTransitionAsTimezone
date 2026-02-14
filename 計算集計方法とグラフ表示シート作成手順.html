@@ -1,0 +1,294 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>時間帯別稼働推移 — 計算集計方法とグラフ表示シート作成手順</title>
+<style>
+  body{font-family:'Meiryo UI','メイリオ',sans-serif;margin:0;padding:0;background:#f5f5f5;color:#333;line-height:1.7}
+  .container{max-width:900px;margin:0 auto;background:#fff;padding:40px 50px;box-shadow:0 0 20px rgba(0,0,0,0.08)}
+  h1{color:#1a5276;border-bottom:3px solid #1a5276;padding-bottom:12px;font-size:1.5em}
+  h2{color:#1a5276;border-left:5px solid #2980b9;padding-left:12px;margin-top:36px;font-size:1.2em}
+  h3{color:#2c3e50;margin-top:24px;font-size:1.05em}
+  table{border-collapse:collapse;width:100%;margin:16px 0;font-size:.92em}
+  th{background:#2980b9;color:#fff;padding:10px 14px;text-align:left;font-weight:normal}
+  td{padding:9px 14px;border:1px solid #ddd;vertical-align:top}
+  tr:nth-child(even){background:#f8f9fa}
+  code{background:#eef;padding:2px 6px;border-radius:3px;font-family:Consolas,monospace;font-size:.9em}
+  .note{background:#eaf2f8;border-left:4px solid #2980b9;padding:12px 16px;margin:16px 0;border-radius:0 4px 4px 0}
+  .warn{background:#fdf2e9;border-left:4px solid #e67e22;padding:12px 16px;margin:16px 0;border-radius:0 4px 4px 0}
+  .danger{background:#fdedec;border-left:4px solid #e74c3c;padding:12px 16px;margin:16px 0;border-radius:0 4px 4px 0}
+  .step{background:#f0f8f0;border:2px solid #27ae60;border-radius:8px;padding:16px 20px;margin:16px 0}
+  .step h3{color:#27ae60;margin:0 0 8px 0}
+  .snum{display:inline-block;background:#27ae60;color:#fff;width:26px;height:26px;border-radius:50%;text-align:center;line-height:26px;font-weight:bold;margin-right:6px;font-size:.9em}
+  .color-sample{display:inline-block;width:50px;height:16px;vertical-align:middle;border:1px solid #ccc;border-radius:2px}
+  .header-info{color:#666;font-size:.9em;margin-bottom:30px}
+  .header-info span{margin-right:20px}
+  .toc{background:#f8f9fa;padding:20px 30px;border-radius:6px;margin:20px 0}
+  .toc ul{padding-left:20px}
+  .toc li{margin:6px 0}
+  .toc a{color:#2980b9;text-decoration:none}
+  .formula{background:#f8f0ff;border:2px solid #8e44ad;border-radius:6px;padding:14px 18px;margin:16px 0;font-size:1.05em;text-align:center}
+  .footer{text-align:center;color:#999;font-size:.8em;margin-top:40px;padding-top:20px;border-top:1px solid #eee}
+</style>
+</head>
+<body>
+<div class="container">
+
+<h1>時間帯別稼働推移<br>計算集計方法とグラフ表示シート作成手順</h1>
+<div class="header-info">
+  <span>バージョン: 1.0</span>
+  <span>最終更新: 2025年9月</span>
+  <span>対象: 手術室管理部門</span>
+</div>
+
+<div class="toc">
+<strong>目次</strong>
+<ul>
+  <li><a href="#s1">第1部：計算集計方法</a>
+    <ul>
+      <li><a href="#s1-1">1.1 ツール概要</a></li>
+      <li><a href="#s1-2">1.2 入力データ仕様</a></li>
+      <li><a href="#s1-3">1.3 集計対象の定義</a></li>
+      <li><a href="#s1-4">1.4 スナップショット計数方法</a></li>
+      <li><a href="#s1-5">1.5 計算例</a></li>
+      <li><a href="#s1-6">1.6 出力仕様</a></li>
+    </ul>
+  </li>
+  <li><a href="#s2">第2部：グラフ表示シート作成手順</a>
+    <ul>
+      <li><a href="#s2-1">2.1 作成の考え方</a></li>
+      <li><a href="#s2-2">2.2 作成手順（Step 1〜9）</a></li>
+      <li><a href="#s2-3">2.3 動作確認</a></li>
+    </ul>
+  </li>
+</ul>
+</div>
+
+<!-- ===================== 第1部 ===================== -->
+<h2 id="s1">第1部：計算集計方法</h2>
+
+<h3 id="s1-1">1.1 ツール概要</h3>
+<p>本ツールは、手術実施データから「時間帯ごとに平均何室の手術室が稼働しているか」を集計します。8:00〜20:00の間、30分おきにスナップショットを取り、その時点で使用中の手術室数をウェイト付きでカウントし、月間の日平均を算出します。</p>
+
+<table>
+<tr><th>項目</th><th>内容</th></tr>
+<tr><td>アプリケーション</td><td><code>時間帯別稼働推移.exe</code>（ダブルクリックで実行）</td></tr>
+<tr><td>入力ファイル</td><td><code>時間帯別稼働推移元データ.xlsx</code></td></tr>
+<tr><td>出力ファイル</td><td><code>時間帯別稼働推移-結果.xlsx</code></td></tr>
+<tr><td>動作環境</td><td>Windows 10 / 11（Python不要）</td></tr>
+</table>
+
+<h3 id="s1-2">1.2 入力データ仕様</h3>
+
+<p><strong>シート「時間帯別稼働推移元データ」のカラム：</strong></p>
+<table>
+<tr><th>カラム名</th><th>型</th><th>説明</th><th>例</th></tr>
+<tr><td>手術実施管理番号</td><td>文字列/数値</td><td>一意の管理番号</td><td>1000104765</td></tr>
+<tr><td>手術実施日</td><td>文字列</td><td>YYYY/MM/DD形式</td><td>2025/09/01</td></tr>
+<tr><td>曜日</td><td>文字列</td><td>○曜日 形式</td><td>月曜日</td></tr>
+<tr><td>実施手術室名</td><td>文字列</td><td>手術室番号</td><td>01A, 09, 10</td></tr>
+<tr><td>入室時刻</td><td>時刻</td><td>HH:MM:SS形式</td><td>08:44:00</td></tr>
+<tr><td>麻酔終了時刻</td><td>時刻</td><td>HH:MM:SS形式</td><td>13:39:00</td></tr>
+<tr><td>実施申込区分</td><td>文字列</td><td>定時 / 臨時 / 緊急</td><td>定時</td></tr>
+</table>
+
+<h3 id="s1-3">1.3 集計対象の定義</h3>
+
+<p><strong>対象手術室とウェイト：</strong></p>
+<table>
+<tr><th>手術室</th><th>ウェイト</th><th>備考</th></tr>
+<tr><td>01A</td><td>0.5</td><td>小手術室</td></tr>
+<tr><td>01B</td><td>0.5</td><td>小手術室</td></tr>
+<tr><td>02, 03, 05, 06, 07, 08, 09, 10</td><td>各1.0</td><td>標準手術室</td></tr>
+</table>
+<div class="note">ｱﾝｷﾞｵは本ツールの対象外です（入力データに含まれていても無視されます）。</div>
+
+<p><strong>除外曜日：</strong></p>
+<table>
+<tr><th>除外対象</th><th>理由</th></tr>
+<tr><td>土曜日</td><td>定時帯と稼働パターンが異なるため</td></tr>
+<tr><td>日曜日</td><td>原則手術なし</td></tr>
+</table>
+
+<p><strong>集計区分（2パターン）：</strong></p>
+<table>
+<tr><th>区分名</th><th>対象となる実施申込区分</th><th>出力先</th></tr>
+<tr><td>全手術（緊急含む）</td><td>定時・臨時・緊急</td><td>計算結果シート Row2（B2:Z2）</td></tr>
+<tr><td>予定手術のみ</td><td>定時 のみ</td><td>計算結果シート Row3（B3:Z3）</td></tr>
+</table>
+
+<h3 id="s1-4">1.4 スナップショット計数方法</h3>
+
+<div class="formula">
+<strong>各時刻の値 = Σ（全対象日の当該時刻の稼働室数）÷ 対象日数</strong>
+</div>
+
+<p><strong>スナップショット時刻：</strong> 8:00, 8:30, 9:00, 9:30, ... 19:30, 20:00（30分おき、計25時点）</p>
+
+<p><strong>計数ルール：</strong></p>
+<table>
+<tr><th>判定</th><th>条件</th></tr>
+<tr><td>稼働中と判定</td><td>入室時刻 ≦ スナップショット時刻 ＜ 麻酔終了時刻</td></tr>
+<tr><td>カウント値</td><td>稼働中の場合、当該手術室のウェイト値（01A/01Bは0.5、その他は1.0）</td></tr>
+<tr><td>集計方法</td><td>対象日ごとにカウントし、全対象日の合計 ÷ 対象日数 で日平均を算出</td></tr>
+<tr><td>丸め</td><td>小数第2位まで（例：6.38）</td></tr>
+</table>
+
+<h3 id="s1-5">1.5 計算例</h3>
+<div class="note">
+<strong>例：2025/09/01（月曜日）、スナップショット時刻 = 9:30</strong><br><br>
+この時刻に手術中のオペ室：<br>
+・09号室：入室 8:44 〜 麻酔終了 13:39 → 8:44 ≦ 9:30 &lt; 13:39 → <strong>稼働中（×1.0）</strong><br>
+・06号室：入室 9:07 〜 麻酔終了 10:24 → 9:07 ≦ 9:30 &lt; 10:24 → <strong>稼働中（×1.0）</strong><br>
+・10号室：入室 8:41 〜 麻酔終了 15:08 → 8:41 ≦ 9:30 &lt; 15:08 → <strong>稼働中（×1.0）</strong><br>
+・01A号室：入室 14:13 〜 麻酔終了 15:50 → 14:13 ≦ 9:30？ → <strong>No（未稼働）</strong><br>
+… 全手術室を同様に判定 …<br><br>
+この日の9:30の値 = 合計 7.5室<br>
+全20日の9:30を合算し ÷ 20 = <strong>6.38</strong>（月平均）
+</div>
+
+<h3 id="s1-6">1.6 出力仕様</h3>
+
+<p><strong>「計算結果」シートのレイアウト：</strong></p>
+<table>
+<tr><th></th><th>A列</th><th>B列</th><th>C列</th><th>D列</th><th>…</th><th>Z列</th></tr>
+<tr><td>Row1</td><td>集計結果</td><td>8:00</td><td>8:30</td><td>9:00</td><td>…</td><td>20:00</td></tr>
+<tr><td>Row2</td><td>全手術（緊急含む）</td><td>0.0</td><td>0.05</td><td>2.88</td><td>…</td><td>0.0</td></tr>
+<tr><td>Row3</td><td>予定手術のみ</td><td>0.0</td><td>0.0</td><td>2.67</td><td>…</td><td>0.0</td></tr>
+</table>
+
+<div class="note">Row1（ヘッダ）とA2:A3（行ラベル）は元ファイルに事前設定済み。exeが書き込むのは<strong>B2:Z3の数値（50セル）のみ</strong>です。</div>
+
+<!-- ===================== 第2部 ===================== -->
+<h2 id="s2">第2部：グラフ表示シート作成手順</h2>
+
+<h3 id="s2-1">2.1 作成の考え方</h3>
+<p>元ファイルに「グラフ表示」シートを追加し、計算結果シートのB2:Z3を参照するグラフをExcelの機能で作成します。一度作成すれば、以降はexe実行のたびにグラフが自動更新されます。</p>
+
+<div class="note">
+<strong>なぜExcelでグラフを作るのか：</strong>
+openpyxl（Pythonライブラリ）で面グラフを作成すると、垂直グリッド線の位置がカテゴリラベルの間に入ってしまう制約があります。Excelの「日付軸」設定を使えばグリッド線をラベル位置に正確に配置できるため、グラフはExcelで事前作成する方式を採用しました。
+</div>
+
+<h3 id="s2-2">2.2 作成手順</h3>
+
+<div class="step">
+<h3><span class="snum">1</span> シート追加</h3>
+<p>元ファイル（<code>時間帯別稼働推移元データ.xlsx</code>）をExcelで開きます。シートタブを右クリック →「挿入」→ ワークシートを追加し、シート名を <code>グラフ表示</code> に変更します。</p>
+</div>
+
+<div class="step">
+<h3><span class="snum">2</span> グラフ挿入</h3>
+<p>「グラフ表示」シートを選択した状態で：</p>
+<p>「挿入」タブ →「グラフ」→「面」→「<strong>2-D 面</strong>」を選択します。空のグラフが挿入されます。</p>
+</div>
+
+<div class="step">
+<h3><span class="snum">3</span> データ系列1：全手術（面グラフ）</h3>
+<p>グラフを右クリック →「<strong>データの選択</strong>」→「追加」：</p>
+<table>
+<tr><th>項目</th><th>入力値</th></tr>
+<tr><td>系列名</td><td><code>=計算結果!$A$2</code></td></tr>
+<tr><td>系列値</td><td><code>=計算結果!$B$2:$Z$2</code></td></tr>
+</table>
+<p>「OK」をクリック。次に「横（項目）軸ラベル」の「<strong>編集</strong>」をクリック：</p>
+<table>
+<tr><th>項目</th><th>入力値</th></tr>
+<tr><td>軸ラベルの範囲</td><td><code>=計算結果!$B$1:$Z$1</code></td></tr>
+</table>
+<p>「OK」→「OK」</p>
+</div>
+
+<div class="step">
+<h3><span class="snum">4</span> データ系列2：予定手術のみ（追加して折れ線に変更）</h3>
+<p>グラフを右クリック →「データの選択」→「追加」：</p>
+<table>
+<tr><th>項目</th><th>入力値</th></tr>
+<tr><td>系列名</td><td><code>=計算結果!$A$3</code></td></tr>
+<tr><td>系列値</td><td><code>=計算結果!$B$3:$Z$3</code></td></tr>
+</table>
+<p>「OK」→「OK」で閉じます。</p>
+<p>次にグラフ内の「<strong>予定手術のみ</strong>」の面部分をクリック → 右クリック →「<strong>系列グラフの種類の変更</strong>」→ 「予定手術のみ」を「<strong>折れ線</strong>」に変更 →「OK」</p>
+</div>
+
+<div class="step">
+<h3><span class="snum">5</span> 色・書式の設定</h3>
+
+<p><strong>■ 全手術（面グラフ）：</strong></p>
+<p>面部分をクリック → 右クリック →「データ系列の書式設定」</p>
+<table>
+<tr><th>設定項目</th><th>値</th></tr>
+<tr><td>塗りつぶし色</td><td>水色 <span class="color-sample" style="background:#BDD7EE"></span> #BDD7EE</td></tr>
+<tr><td>透明度</td><td>30〜40%（グリッド線が透けて見える程度）</td></tr>
+<tr><td>枠線</td><td>なし</td></tr>
+</table>
+
+<p><strong>■ 予定手術のみ（折れ線）：</strong></p>
+<p>線をクリック → 右クリック →「データ系列の書式設定」</p>
+<table>
+<tr><th>設定項目</th><th>値</th></tr>
+<tr><td>線の色</td><td>濃い青 <span class="color-sample" style="background:#2E75B6"></span> #2E75B6</td></tr>
+<tr><td>線の幅</td><td>2pt</td></tr>
+<tr><td>スムージング</td><td>チェックを入れる</td></tr>
+</table>
+</div>
+
+<div class="step">
+<h3><span class="snum">6</span> 縦軸（Y軸）の設定</h3>
+<p>縦軸の数値をダブルクリック →「軸の書式設定」</p>
+<table>
+<tr><th>設定項目</th><th>値</th></tr>
+<tr><td>最小値</td><td>0</td></tr>
+<tr><td>最大値</td><td>9</td></tr>
+<tr><td>目盛間隔（主）</td><td>1</td></tr>
+</table>
+<p>軸タイトルを追加：「<strong>（部屋数）</strong>」</p>
+</div>
+
+<div class="step">
+<h3><span class="snum">7</span> 横軸（X軸）の設定 ★重要</h3>
+<p>横軸のラベルをダブルクリック →「軸の書式設定」</p>
+<table>
+<tr><th>設定項目</th><th>値</th></tr>
+<tr><td>軸の種類</td><td><strong>「日付軸」に変更</strong>（これで垂直グリッド線がラベル位置に揃います）</td></tr>
+<tr><td>目盛の間隔</td><td>1</td></tr>
+</table>
+<div class="warn"><strong>ポイント：</strong>「テキスト軸」のままだと垂直グリッド線がラベルの間に入ります。必ず「<strong>日付軸</strong>」に変更してください。</div>
+</div>
+
+<div class="step">
+<h3><span class="snum">8</span> グリッド線の設定</h3>
+<p>グラフ内をクリック → 右上の「＋」ボタン（グラフ要素）→「目盛線」</p>
+<table>
+<tr><th>設定項目</th><th>操作</th></tr>
+<tr><td>水平グリッド線</td><td>「第1主横軸目盛線」にチェック</td></tr>
+<tr><td>垂直グリッド線</td><td>「第1主縦軸目盛線」にチェック</td></tr>
+<tr><td>グリッド線の色</td><td>各グリッド線をクリック → 薄いグレーに変更</td></tr>
+</table>
+</div>
+
+<div class="step">
+<h3><span class="snum">9</span> 凡例・仕上げ・保存</h3>
+<p>凡例はグラフ上部に配置。グラフタイトルは削除または「＜申込区分別＞」等に設定。グラフサイズを適宜調整します。</p>
+<p>完了したら元ファイル（<code>時間帯別稼働推移元データ.xlsx</code>）を<strong>上書き保存</strong>します。</p>
+</div>
+
+<h3 id="s2-3">2.3 動作確認</h3>
+<div class="note">
+<strong>確認方法：</strong><br>
+exe を実行して「時間帯別稼働推移-結果.xlsx」を開き、「グラフ表示」シートにグラフが正しく表示されることを確認してください。計算結果シートのB2:Z3に値が書き込まれ、グラフが自動で反映されます。
+</div>
+
+<div class="warn">
+<strong>注意事項：</strong><br>
+・「グラフ表示」シートの名前は変更しないでください<br>
+・「計算結果」シートのB1:Z1（時刻ヘッダ）やA2:A3（行ラベル）は変更しないでください<br>
+・exeは「計算結果」シートのB2:Z3にのみ値を書き込みます。「グラフ表示」シートには一切触れないため、一度グラフを作成すれば毎月のデータ更新はexe実行だけで完了します
+</div>
+
+<div class="footer">時間帯別稼働推移 — 計算集計方法とグラフ表示シート作成手順 v1.0 &copy; 2025</div>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,16 @@
+# PyInstaller output
+build/
+dist/
+*.spec
+*.exe
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# Virtual environments
+.venv/
+venv/
+
+# Windows null file
+nul
