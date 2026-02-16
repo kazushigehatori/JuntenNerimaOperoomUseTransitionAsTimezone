@@ -1,8 +1,8 @@
 """
 時間帯別稼働推移 計算スクリプト
 ================================
-手術実施データから、30分おきのスナップショット時点で
-何室稼働中かを計算し、計算結果シートに出力します。
+手術実施データから、30分おきのスナップショット時刻を中心とした
+計測区間（-14分〜+15分）で何室稼働中かを計算し、計算結果シートに出力します。
 
 グラフは元ファイルの「グラフ表示」シートに事前設定済みのため、
 計算結果が書き込まれると自動でグラフに反映されます。
@@ -99,7 +99,7 @@ def main():
 
     # --- 集計関数 ---
     def count_rooms_at_snapshots(data):
-        """各スナップショット時刻での稼働室数（ウェイト付き）を日平均で算出"""
+        """各スナップショット時刻の計測区間（-14分〜+15分）での稼働室数（ウェイト付き）を日平均で算出"""
         days = {}
         for r in data:
             d = r["date"]
@@ -116,6 +116,8 @@ def main():
         for day_str, day_records in days.items():
             for si, snap in enumerate(snapshot_times):
                 snap_min = to_minutes(snap)
+                interval_a = snap_min - 14  # 計測区間開始
+                interval_b = snap_min + 15  # 計測区間終了
                 count = 0.0
                 for r in day_records:
                     room = r["room"]
@@ -123,7 +125,8 @@ def main():
                         continue
                     start_min = to_minutes(r["start"])
                     end_min = to_minutes(r["end"])
-                    if start_min <= snap_min < end_min:
+                    # 閉区間 [A,B] と [C,D] の重なり判定
+                    if interval_a <= end_min and start_min <= interval_b:
                         count += room_weight[room]
                 totals[si] += count
 
@@ -140,14 +143,42 @@ def main():
     print(f"予定手術のみ: {len(scheduled_only)} 件")
     sched_results = count_rooms_at_snapshots(scheduled_only)
 
-    # --- 計算結果シートに書き込み（B2:Z3のみ）---
+    # --- 計算結果シートに書き込み ---
     ws_result = wb["計算結果"]
 
+    # 全体集計（Row2-3）
     for i, val in enumerate(all_results):
         ws_result.cell(row=2, column=2 + i, value=val)
 
     for i, val in enumerate(sched_results):
         ws_result.cell(row=3, column=2 + i, value=val)
+
+    # --- 曜日別集計（Row5〜33）---
+    weekday_rows = {
+        "月曜日": {"all_row": 7,  "sched_row": 8},
+        "火曜日": {"all_row": 12, "sched_row": 13},
+        "水曜日": {"all_row": 17, "sched_row": 18},
+        "木曜日": {"all_row": 22, "sched_row": 23},
+        "金曜日": {"all_row": 27, "sched_row": 28},
+        "土曜日": {"all_row": 32, "sched_row": 33},
+    }
+
+    print("\n--- 曜日別集計 ---")
+    for weekday_name, rows in weekday_rows.items():
+        weekday_records = [r for r in records if r["weekday"] == weekday_name and r["room"] in room_weight]
+        weekday_scheduled = [r for r in weekday_records if r["category"] == "定時"]
+
+        wd_all_results = count_rooms_at_snapshots(weekday_records)
+        wd_sched_results = count_rooms_at_snapshots(weekday_scheduled)
+
+        for i, val in enumerate(wd_all_results):
+            ws_result.cell(row=rows["all_row"], column=2 + i, value=val)
+        for i, val in enumerate(wd_sched_results):
+            ws_result.cell(row=rows["sched_row"], column=2 + i, value=val)
+
+        # 対象日数を算出
+        wd_days = set(r["date"] for r in weekday_records)
+        print(f"  {weekday_name}: 全手術={wd_all_results}, 予定={wd_sched_results}, 対象日数={len(wd_days)}")
 
     # --- 別名保存 ---
     wb.save(OUTPUT_FILE)
