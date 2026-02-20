@@ -1,6 +1,6 @@
 """
-HOGY社方式との差異調査 — 8試行の稼働率比較
-============================================
+HOGY社方式との差異調査 — 全14試行の稼働率比較
+==============================================
 弊社（メドライン）計算: 76.0%
 HOGY社計算: 67.9%
 差: 8.1ポイント
@@ -78,36 +78,43 @@ def main():
     num_days = len(all_dates)
     print(f"対象レコード数: {len(records_filtered)}, 対象日数: {num_days}")
 
-    # 区分別件数
     cat_counts = {}
     for r in records_filtered:
         cat_counts[r["category"]] = cat_counts.get(r["category"], 0) + 1
     print(f"区分別件数: {cat_counts}")
 
-    # --- 定時内スナップショット時刻: 9:00〜16:30 = 16区間 ---
-    slots_9_1630 = []
-    for h in range(9, 17):
-        slots_9_1630.append(dt.time(h, 0))
-        if h < 17:
-            slots_9_1630.append(dt.time(h, 30))
-    # 9:00, 9:30, 10:00, ..., 16:00, 16:30 = 16個
-    slots_9_1630 = [s for s in slots_9_1630 if to_minutes(s) <= 16 * 60 + 30]
-    print(f"定時内スナップショット: {len(slots_9_1630)}区間 ({slots_9_1630[0]}〜{slots_9_1630[-1]})")
-
     weight_total = sum(room_weight.values())
 
-    # ========== 計算関数 ==========
+    # --- スロット定義 ---
+    # 9:00〜16:30 = 16区間
+    slots_16 = []
+    for h in range(9, 17):
+        slots_16.append(dt.time(h, 0))
+        if h < 17:
+            slots_16.append(dt.time(h, 30))
+    slots_16 = [s for s in slots_16 if to_minutes(s) <= 16 * 60 + 30]
+    print(f"スロット(16区間): {len(slots_16)}個 (9:00〜16:30)")
 
-    def calc_interval_overlap(data, slots, weights, weight_sum):
-        """弊社方式: 区間重なり（-14分〜+15分）"""
+    # --- データセット ---
+    all_surgery = [r for r in records_filtered if r["room"] in room_weight]
+    scheduled_only = [r for r in all_surgery if r["category"] == "定時"]
+    room_weight_flat = {room: 1.0 for room in room_weight}
+    weight_total_flat = sum(room_weight_flat.values())
+    room_weight_no_angio = {k: v for k, v in room_weight.items() if k != "ｱﾝｷﾞｵ"}
+    weight_no_angio = sum(room_weight_no_angio.values())
+    scheduled_no_angio = [r for r in scheduled_only if r["room"] in room_weight_no_angio]
+
+    # ========== 汎用計算関数 ==========
+    def calc_overlap(data, slots, weights, weight_sum, offset_a, offset_b):
+        """区間重なり方式: [snap+offset_a, snap+offset_b] と手術時間の重なり判定"""
         numerator = 0.0
         denominator = weight_sum * num_days * len(slots)
         for d in all_dates:
             day_recs = [r for r in data if r["date"] == d]
             for snap in slots:
                 snap_min = to_minutes(snap)
-                interval_a = snap_min - 14
-                interval_b = snap_min + 15
+                ia = snap_min + offset_a
+                ib = snap_min + offset_b
                 count = 0.0
                 for r in day_recs:
                     room = r["room"]
@@ -115,13 +122,13 @@ def main():
                         continue
                     s = to_minutes(r["start"])
                     e = to_minutes(r["end"])
-                    if interval_a <= e and s <= interval_b:
+                    if ia <= e and s <= ib:
                         count += weights[room]
                 numerator += count
         return (numerator / denominator * 100) if denominator > 0 else 0.0
 
     def calc_snapshot(data, slots, weights, weight_sum):
-        """HOGY社方式: スナップショット（点判定: start ≤ snap < end）"""
+        """スナップショット方式: start ≤ snap < end"""
         numerator = 0.0
         denominator = weight_sum * num_days * len(slots)
         for d in all_dates:
@@ -140,69 +147,46 @@ def main():
                 numerator += count
         return (numerator / denominator * 100) if denominator > 0 else 0.0
 
-    # ========== 各種データセット ==========
-    all_surgery = [r for r in records_filtered if r["room"] in room_weight]
-    scheduled_only = [r for r in all_surgery if r["category"] == "定時"]
+    # ========== 全14試行 ==========
+    target = 67.9
 
-    # ウェイト1.0固定
-    room_weight_flat = {room: 1.0 for room in room_weight}
-    weight_total_flat = sum(room_weight_flat.values())
+    trials = []
 
-    # 部屋除外版（ｱﾝｷﾞｵ除外 — 手術室として一般的でない）
-    room_weight_no_angio = {k: v for k, v in room_weight.items() if k != "ｱﾝｷﾞｵ"}
-    weight_no_angio = sum(room_weight_no_angio.values())
-    scheduled_no_angio = [r for r in scheduled_only if r["room"] in room_weight_no_angio]
+    # 試行1: 弊社区間(-14/+15) + 全ウェイト + 全手術 + 9:00-16:30
+    r1 = calc_overlap(all_surgery, slots_16, room_weight, weight_total, -14, +15)
+    trials.append(("試行1", "弊社区間(-14/+15)", "定義準拠", "全手術", "9:00-16:30", r1))
 
-    # ========== 8試行実行 ==========
-    print("\n" + "=" * 60)
-    print("=== 稼働率試行計算結果 ===")
-    print("=" * 60)
+    # 試行2: スナップショット + 全ウェイト + 全手術 + 9:00-16:30
+    r2 = calc_snapshot(all_surgery, slots_16, room_weight, weight_total)
+    trials.append(("試行2", "スナップショット", "定義準拠", "全手術", "9:00-16:30", r2))
 
-    results = {}
+    # 試行3: スナップショット + 全ウェイト + 定時のみ + 9:00-16:30
+    r3 = calc_snapshot(scheduled_only, slots_16, room_weight, weight_total)
+    trials.append(("試行3", "スナップショット", "定義準拠", "定時のみ", "9:00-16:30", r3))
 
-    # 試行1: 区間重なり + 全ウェイト + 全手術
-    r1 = calc_interval_overlap(all_surgery, slots_9_1630, room_weight, weight_total)
-    results["試行1"] = r1
-    print(f"試行1: 区間重なり + 全ウェイト + 全手術        → {r1:.1f}%")
+    # 試行4: スナップショット + ウェイト1.0 + 定時のみ + 9:00-16:30
+    r4 = calc_snapshot(scheduled_only, slots_16, room_weight_flat, weight_total_flat)
+    trials.append(("試行4", "スナップショット", "W1.0固定", "定時のみ", "9:00-16:30", r4))
 
-    # 試行2: スナップショット + 全ウェイト + 全手術
-    r2 = calc_snapshot(all_surgery, slots_9_1630, room_weight, weight_total)
-    results["試行2"] = r2
-    print(f"試行2: スナップショット + 全ウェイト + 全手術    → {r2:.1f}%")
+    # 試行5: スナップショット + ｱﾝｷﾞｵ除外 + 定時のみ + 9:00-16:30
+    r5 = calc_snapshot(scheduled_no_angio, slots_16, room_weight_no_angio, weight_no_angio)
+    trials.append(("試行5", "スナップショット", "定義準拠", "定時のみ", "9:00-16:30(ｱﾝｷﾞｵ除)", r5))
 
-    # 試行3: スナップショット + 全ウェイト + 定時のみ
-    r3 = calc_snapshot(scheduled_only, slots_9_1630, room_weight, weight_total)
-    results["試行3"] = r3
-    print(f"試行3: スナップショット + 全ウェイト + 定時のみ  → {r3:.1f}%")
+    # 試行6: 弊社区間(-14/+15) + 全ウェイト + 定時のみ + 9:00-16:30
+    r6 = calc_overlap(scheduled_only, slots_16, room_weight, weight_total, -14, +15)
+    trials.append(("試行6", "弊社区間(-14/+15)", "定義準拠", "定時のみ", "9:00-16:30", r6))
 
-    # 試行4: スナップショット + ウェイト1.0 + 定時のみ
-    r4 = calc_snapshot(scheduled_only, slots_9_1630, room_weight_flat, weight_total_flat)
-    results["試行4"] = r4
-    print(f"試行4: スナップショット + ウェイト1.0 + 定時のみ → {r4:.1f}%")
+    # 試行7: スナップショット + 全手術 + 16区間 (=試行2と同じ、明示確認)
+    r7 = r2
+    trials.append(("試行7", "スナップショット", "定義準拠", "全手術", "9:00-16:30(16区間)", r7))
 
-    # 試行5: スナップショット + ｱﾝｷﾞｵ除外 + 定時のみ
-    r5 = calc_snapshot(scheduled_no_angio, slots_9_1630, room_weight_no_angio, weight_no_angio)
-    results["試行5"] = r5
-    print(f"試行5: スナップショット + ｱﾝｷﾞｵ除外 + 定時のみ → {r5:.1f}%")
-
-    # 試行6: 区間重なり + 全ウェイト + 定時のみ
-    r6 = calc_interval_overlap(scheduled_only, slots_9_1630, room_weight, weight_total)
-    results["試行6"] = r6
-    print(f"試行6: 区間重なり + 全ウェイト + 定時のみ      → {r6:.1f}%")
-
-    # 試行7: スナップショット + 全手術 + 16区間（9:00-16:30, 同じ）
-    # ※ 試行2と同じスロットだが明示的に確認
-    r7 = calc_snapshot(all_surgery, slots_9_1630, room_weight, weight_total)
-    results["試行7"] = r7
-    print(f"試行7: スナップショット + 全手術 + 16区間       → {r7:.1f}%")
-
-    # 試行8: スナップショット + 全手術 + 分母=実部屋数×日数×時間帯数
-    num_rooms_actual = len(room_weight)  # 実部屋数（ウェイトではなく部屋数）
+    # 試行8: スナップショット + 全手術 + 分母=実部屋数
+    num_rooms_actual = len(room_weight)
+    r8_denom = num_rooms_actual * num_days * len(slots_16)
     r8_num = 0.0
-    r8_denom = num_rooms_actual * num_days * len(slots_9_1630)
     for d in all_dates:
         day_recs = [r for r in all_surgery if r["date"] == d]
-        for snap in slots_9_1630:
+        for snap in slots_16:
             snap_min = to_minutes(snap)
             count = 0.0
             for r in day_recs:
@@ -215,189 +199,121 @@ def main():
                     count += room_weight[room]
             r8_num += count
     r8 = (r8_num / r8_denom * 100) if r8_denom > 0 else 0.0
-    results["試行8"] = r8
-    print(f"試行8: スナップショット + 分母=実部屋数        → {r8:.1f}%")
+    trials.append(("試行8", "スナップショット", "定義準拠", "全手術", "分母=実部屋数", r8))
 
-    # ========== 目標との比較 ==========
-    target = 67.9
-    print(f"\n目標: {target}%")
+    # 試行9: HOGY区間(0/+29) + 定時のみ + 9:00-16:30
+    r9 = calc_overlap(scheduled_only, slots_16, room_weight, weight_total, 0, +29)
+    trials.append(("試行9", "HOGY区間(0/+29)", "定義準拠", "定時のみ", "9:00-16:30", r9))
 
-    closest = min(results.items(), key=lambda x: abs(x[1] - target))
-    print(f"最も近い試行: {closest[0]}（{closest[1]:.1f}%、差 {abs(closest[1]-target):.1f}pt）")
+    # 試行10: HOGY区間(0/+29) + 全手術 + 9:00-16:30
+    r10 = calc_overlap(all_surgery, slots_16, room_weight, weight_total, 0, +29)
+    trials.append(("試行10", "HOGY区間(0/+29)", "定義準拠", "全手術", "9:00-16:30", r10))
 
-    # ========== 詳細表 ==========
-    print(f"\n{'='*80}")
-    print(f"{'試行':8s} {'判定方式':16s} {'ウェイト':12s} {'対象手術':10s} {'部屋':10s} {'稼働率':8s} {'差':8s}")
-    print(f"{'-'*80}")
+    # 試行11: HOGY区間(0/+29) + 定時のみ + 9:00-16:30 (=試行9と同じだが明示)
+    r11 = r9
+    trials.append(("試行11", "HOGY区間(0/+29)", "定義準拠", "定時のみ", "9:00-16:30(16区間)", r11))
 
-    trial_info = [
-        ("試行1", "区間重なり(-14/+15)", "定義シート準拠", "全手術", "全室", r1),
-        ("試行2", "スナップショット", "定義シート準拠", "全手術", "全室", r2),
-        ("試行3", "スナップショット", "定義シート準拠", "定時のみ", "全室", r3),
-        ("試行4", "スナップショット", "全室1.0固定", "定時のみ", "全室", r4),
-        ("試行5", "スナップショット", "定義シート準拠", "定時のみ", "ｱﾝｷﾞｵ除外", r5),
-        ("試行6", "区間重なり(-14/+15)", "定義シート準拠", "定時のみ", "全室", r6),
-        ("試行7", "スナップショット", "定義シート準拠", "全手術", "全室(16区間)", r7),
-        ("試行8", "スナップショット", "定義シート準拠", "全手術", "分母=実部屋数", r8),
+    # 試行12: 弊社区間(-14/+15) + 定時のみ + 9:00-16:30 (=試行6と同じだが明示)
+    r12 = r6
+    trials.append(("試行12", "弊社区間(-14/+15)", "定義準拠", "定時のみ", "9:00-16:30(16区間)", r12))
+
+    # 試行13: HOGY区間(0/+29) + 全手術 + 9:00-16:30 (=試行10と同じだが明示)
+    r13 = r10
+    trials.append(("試行13", "HOGY区間(0/+29)", "定義準拠", "全手術", "9:00-16:30(16区間)", r13))
+
+    # 試行14: 弊社区間(-14/+15) + 全手術 + 9:00-16:30 (=試行1と同じだが明示)
+    r14 = r1
+    trials.append(("試行14", "弊社区間(-14/+15)", "定義準拠", "全手術", "9:00-16:30(16区間)", r14))
+
+    # ========== 結果表示 ==========
+    print("\n" + "=" * 90)
+    print("=== 全試行結果一覧 ===")
+    print("=" * 90)
+
+    # 重複排除した実質的な試行のみ表示
+    unique_trials = [
+        ("試行1", "弊社区間(-14/+15) + 全ウェイト + 全手術 + 9:00-16:30", r1),
+        ("試行2", "スナップショット + 全ウェイト + 全手術 + 9:00-16:30", r2),
+        ("試行3", "スナップショット + 全ウェイト + 定時のみ + 9:00-16:30", r3),
+        ("試行4", "スナップショット + ウェイト1.0 + 定時のみ + 9:00-16:30", r4),
+        ("試行5", "スナップショット + ｱﾝｷﾞｵ除外 + 定時のみ + 9:00-16:30", r5),
+        ("試行6", "弊社区間(-14/+15) + 全ウェイト + 定時のみ + 9:00-16:30", r6),
+        ("試行7", "スナップショット + 全手術 + 9:00-16:30（= 試行2）", r7),
+        ("試行8", "スナップショット + 分母=実部屋数 + 全手術 + 9:00-16:30", r8),
+        ("試行9", "HOGY区間(0/+29) + 全ウェイト + 定時のみ + 9:00-16:30", r9),
+        ("試行10", "HOGY区間(0/+29) + 全ウェイト + 全手術 + 9:00-16:30", r10),
+        ("試行11", "HOGY区間(0/+29) + 定時のみ + 9:00-16:30（= 試行9）", r11),
+        ("試行12", "弊社区間(-14/+15) + 定時のみ + 9:00-16:30（= 試行6）", r12),
+        ("試行13", "HOGY区間(0/+29) + 全手術 + 9:00-16:30（= 試行10）", r13),
+        ("試行14", "弊社区間(-14/+15) + 全手術 + 9:00-16:30（= 試行1）", r14),
     ]
 
-    for name, method, weight, surgery, room, rate in trial_info:
+    for name, desc, rate in unique_trials:
         diff = rate - target
-        mark = " ★" if abs(diff) == abs(closest[1] - target) else ""
-        print(f"{name:8s} {method:16s} {weight:12s} {surgery:10s} {room:12s} {rate:6.1f}% {diff:+6.1f}pt{mark}")
+        mark = " ★" if abs(diff) <= 2.0 else ""
+        print(f"  {name:6s}: {desc:58s} → {rate:5.1f}% (差{diff:+5.1f}pt){mark}")
 
-    # ========== 追加探索: 組み合わせで67.9%に近づく可能性 ==========
+    # ========== 詳細比較表 ==========
+    print(f"\n{'='*100}")
+    print("=== 詳細比較表（重複除外） ===")
+    print(f"{'='*100}")
+    print(f"{'試行':8s} {'区間方式':20s} {'ウェイト':12s} {'対象手術':10s} {'時間帯':16s} {'稼働率':8s} {'差':8s}")
+    print(f"{'-'*100}")
+
+    dedup_trials = [
+        ("試行1", "弊社(-14/+15)", "定義準拠", "全手術", "9:00-16:30", r1),
+        ("試行2", "SS(点判定)", "定義準拠", "全手術", "9:00-16:30", r2),
+        ("試行3", "SS(点判定)", "定義準拠", "定時のみ", "9:00-16:30", r3),
+        ("試行4", "SS(点判定)", "全室1.0", "定時のみ", "9:00-16:30", r4),
+        ("試行5", "SS(点判定)", "定義準拠", "定時ｱﾝｷﾞｵ除", "9:00-16:30", r5),
+        ("試行6", "弊社(-14/+15)", "定義準拠", "定時のみ", "9:00-16:30", r6),
+        ("試行8", "SS(点判定)", "定義準拠", "全手術", "分母=実部屋数", r8),
+        ("試行9", "HOGY(0/+29)", "定義準拠", "定時のみ", "9:00-16:30", r9),
+        ("試行10", "HOGY(0/+29)", "定義準拠", "全手術", "9:00-16:30", r10),
+    ]
+
+    closest_rate = min(dedup_trials, key=lambda x: abs(x[5] - target))
+    for name, method, weight, surgery, slots_desc, rate in dedup_trials:
+        diff = rate - target
+        mark = " ★" if name == closest_rate[0] else ""
+        print(f"{name:8s} {method:20s} {weight:12s} {surgery:12s} {slots_desc:16s} {rate:6.1f}% {diff:+6.1f}pt{mark}")
+
+    print(f"\n目標: {target}%")
+    print(f"最も近い試行: {closest_rate[0]}（{closest_rate[5]:.1f}%、差 {abs(closest_rate[5]-target):.1f}pt）")
+
+    # ========== 影響分析 ==========
     print(f"\n{'='*80}")
-    print("=== 追加探索: 条件組み合わせ ===")
+    print("=== 条件別の影響分析 ===")
     print(f"{'='*80}")
 
-    combos = []
+    print("\n【区間方式の影響】")
+    print(f"  弊社(-14/+15)→SS(点判定): {r2-r1:+.1f}pt (全手術: 試行1→2)")
+    print(f"  弊社(-14/+15)→SS(点判定): {r3-r6:+.1f}pt (定時: 試行6→3)")
+    print(f"  弊社(-14/+15)→HOGY(0/+29): {r10-r1:+.1f}pt (全手術: 試行1→10)")
+    print(f"  弊社(-14/+15)→HOGY(0/+29): {r9-r6:+.1f}pt (定時: 試行6→9)")
 
-    # combo A: スナップショット + 定時のみ + ウェイト1.0 + ｱﾝｷﾞｵ除外
-    room_flat_no_angio = {k: 1.0 for k in room_weight if k != "ｱﾝｷﾞｵ"}
-    wt_flat_no_angio = sum(room_flat_no_angio.values())
-    sched_no_angio_data = [r for r in scheduled_only if r["room"] in room_flat_no_angio]
-    rA = calc_snapshot(sched_no_angio_data, slots_9_1630, room_flat_no_angio, wt_flat_no_angio)
-    combos.append(("A: SS+定時+W1.0+ｱﾝｷﾞｵ除外", rA))
+    print("\n【対象手術の影響】")
+    print(f"  全手術→定時のみ（弊社区間）: {r6-r1:+.1f}pt (試行1→6)")
+    print(f"  全手術→定時のみ（SS方式）:   {r3-r2:+.1f}pt (試行2→3)")
+    print(f"  全手術→定時のみ（HOGY区間）: {r9-r10:+.1f}pt (試行10→9)")
 
-    # combo B: スナップショット + 全手術 + ウェイト1.0
-    rB = calc_snapshot(all_surgery, slots_9_1630, room_weight_flat, weight_total_flat)
-    combos.append(("B: SS+全手術+W1.0", rB))
+    print("\n【ウェイトの影響】")
+    print(f"  定義準拠→1.0固定: {r4-r3:+.1f}pt (試行3→4)")
 
-    # combo C: 区間重なり + 定時のみ + ｱﾝｷﾞｵ除外
-    rC = calc_interval_overlap(scheduled_no_angio, slots_9_1630, room_weight_no_angio, weight_no_angio)
-    combos.append(("C: 区間+定時+ｱﾝｷﾞｵ除外", rC))
+    print("\n【区間定義の比較（9:00枠の具体例）】")
+    print(f"  弊社方式: 8:46 〜 9:15 (-14分〜+15分)")
+    print(f"  HOGY方式: 9:00 〜 9:29 ( 0分〜+29分)")
+    print(f"  SS方式 :  9:00 の瞬間（点判定）")
 
-    # combo D: スナップショット + 全手術 + ｱﾝｷﾞｵ除外
-    all_no_angio = [r for r in all_surgery if r["room"] in room_weight_no_angio]
-    rD = calc_snapshot(all_no_angio, slots_9_1630, room_weight_no_angio, weight_no_angio)
-    combos.append(("D: SS+全手術+ｱﾝｷﾞｵ除外", rD))
-
-    # combo E: スナップショット + 定時のみ + 分母=実部屋数
-    rE_num = 0.0
-    rE_denom = len(room_weight) * num_days * len(slots_9_1630)
-    for d in all_dates:
-        day_recs = [r for r in scheduled_only if r["date"] == d]
-        for snap in slots_9_1630:
-            snap_min = to_minutes(snap)
-            count = 0.0
-            for r in day_recs:
-                room = r["room"]
-                if room not in room_weight:
-                    continue
-                s = to_minutes(r["start"])
-                e = to_minutes(r["end"])
-                if s <= snap_min < e:
-                    count += room_weight[room]
-            rE_num += count
-    rE = (rE_num / rE_denom * 100) if rE_denom > 0 else 0.0
-    combos.append(("E: SS+定時+分母=実部屋数", rE))
-
-    # combo F: スナップショット + 定時のみ + 01A/01Bを1室として統合
-    # 01A+01Bを「01」として扱い、どちらかが使用中なら1.0
-    def calc_snapshot_merged_01(data, slots, weights_merged, weight_sum_merged):
-        """01A/01Bを統合して1室扱いのスナップショット"""
-        numerator = 0.0
-        denominator = weight_sum_merged * num_days * len(slots)
-        for d in all_dates:
-            day_recs = [r for r in data if r["date"] == d]
-            for snap in slots:
-                snap_min = to_minutes(snap)
-                count = 0.0
-                room_01_active = False
-                for r in day_recs:
-                    room = r["room"]
-                    if room not in room_weight:
-                        continue
-                    s = to_minutes(r["start"])
-                    e = to_minutes(r["end"])
-                    if s <= snap_min < e:
-                        if room in ("01A", "01B"):
-                            room_01_active = True
-                        else:
-                            count += weights_merged.get(room, 0)
-                if room_01_active:
-                    count += 1.0
-                numerator += count
-        return (numerator / denominator * 100) if denominator > 0 else 0.0
-
-    weights_merged = {k: v for k, v in room_weight.items() if k not in ("01A", "01B")}
-    weights_merged["01"] = 1.0
-    wt_merged = sum(weights_merged.values())
-    rF = calc_snapshot_merged_01(scheduled_only, slots_9_1630, weights_merged, wt_merged)
-    combos.append(("F: SS+定時+01AB統合1室", rF))
-
-    # combo G: スナップショット + 定時のみ + ウェイト1.0 + 01AB統合 + ｱﾝｷﾞｵ除外
-    def calc_snapshot_merged_01_flat(data, slots, rooms_set, num_rooms):
-        """01A/01B統合 + ウェイト1.0 + 特定部屋のみ"""
-        numerator = 0.0
-        denominator = num_rooms * num_days * len(slots)
-        for d in all_dates:
-            day_recs = [r for r in data if r["date"] == d]
-            for snap in slots:
-                snap_min = to_minutes(snap)
-                count = 0.0
-                room_01_active = False
-                for r in day_recs:
-                    room = r["room"]
-                    if room not in room_weight:
-                        continue
-                    s = to_minutes(r["start"])
-                    e = to_minutes(r["end"])
-                    if s <= snap_min < e:
-                        if room in ("01A", "01B"):
-                            room_01_active = True
-                        elif room in rooms_set:
-                            count += 1.0
-                if room_01_active and "01" in rooms_set:
-                    count += 1.0
-                numerator += count
-        return (numerator / denominator * 100) if denominator > 0 else 0.0
-
-    rooms_g = {"01", "02", "03", "05", "06", "07", "08", "09", "10"}  # 9室（ｱﾝｷﾞｵ除外、01AB統合）
-    rG = calc_snapshot_merged_01_flat(scheduled_only, slots_9_1630, rooms_g, len(rooms_g))
-    combos.append(("G: SS+定時+W1.0+01統合+ｱﾝｷﾞｵ除", rG))
-
-    for name, rate in combos:
-        diff = rate - target
-        mark = " ★" if abs(diff) < 1.0 else ""
-        print(f"  {name:40s} → {rate:6.1f}% (差 {diff:+5.1f}pt){mark}")
-
-    # 全結果から最も近いものを選出
-    all_results = list(results.items()) + [(f"追加{n}", r) for n, r in combos]
-    best = min(all_results, key=lambda x: abs(x[1] - target))
-    print(f"\n全試行中最も近い: {best[0]}（{best[1]:.1f}%、差 {abs(best[1]-target):.1f}pt）")
-
-    # ========== 分析 ==========
     print(f"\n{'='*80}")
-    print("=== 分析 ===")
+    print("=== 結論 ===")
     print(f"{'='*80}")
-    print(f"弊社現行方式（試行1）: {r1:.1f}%")
-    print(f"HOGY社目標値: {target}%")
-    print(f"差: {r1 - target:.1f}pt")
-    print()
-    print("【判定方式の影響】")
-    print(f"  区間重なり→スナップショットの変更効果: {r2 - r1:+.1f}pt (試行1→試行2)")
-    print()
-    print("【対象手術の影響】")
-    print(f"  全手術→定時のみの変更効果(SS方式): {r3 - r2:+.1f}pt (試行2→試行3)")
-    print(f"  全手術→定時のみの変更効果(区間方式): {r6 - r1:+.1f}pt (試行1→試行6)")
-    print()
-    print("【ウェイトの影響】")
-    print(f"  定義準拠→1.0固定の変更効果: {r4 - r3:+.1f}pt (試行3→試行4)")
-    print()
-    print("【部屋除外の影響】")
-    print(f"  全室→ｱﾝｷﾞｵ除外の変更効果: {r5 - r3:+.1f}pt (試行3→試行5)")
-    print()
-    print("【HOGY社方式の推定】")
-    print(f"  最有力候補: {best[0]} = {best[1]:.1f}%")
-    print(f"  HOGY社との差: {abs(best[1]-target):.1f}pt")
-    if abs(best[1] - target) > 2.0:
-        print("  ※ 2pt以上の差があるため、HOGY社は追加の条件差がある可能性:")
-        print("    - 対象月・対象期間の違い")
-        print("    - 手術室の定義差（特定部屋の除外）")
-        print("    - 稼働率の分母・分子定義の違い")
-        print("    - 端数処理・丸め方の違い")
+    print(f"最も67.9%に近い: {closest_rate[0]} = {closest_rate[5]:.1f}%（差{abs(closest_rate[5]-target):.1f}pt）")
+    print(f"条件: {closest_rate[1]} + {closest_rate[2]} + {closest_rate[3]} + {closest_rate[4]}")
+    if abs(closest_rate[5] - target) <= 2.0:
+        print("→ 差2pt以内。HOGY社はこの条件に近い計算方式と推定される。")
+    else:
+        print("→ 差2pt超。HOGY社は追加の条件差（対象期間・部屋定義等）がある可能性。")
 
 
 if __name__ == "__main__":
