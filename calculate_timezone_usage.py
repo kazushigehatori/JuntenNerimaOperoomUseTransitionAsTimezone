@@ -241,6 +241,8 @@ def main():
         top=Side(style="thin"), bottom=Side(style="thin"),
     )
 
+    num_weekdays = len(all_dates)  # 平日日数
+
     def write_section(ws, start_row, section_label, by_day_data, dates):
         """1セクションを書き込み、最終行+1を返す"""
         # セクションラベル
@@ -249,6 +251,8 @@ def main():
 
         # ヘッダ行
         hr = start_row + 1
+        dark_fill = PatternFill("solid", fgColor="1A5276")
+
         cell = ws.cell(row=hr, column=1, value="時間帯")
         cell.font = header_font
         cell.fill = header_fill
@@ -256,22 +260,29 @@ def main():
         cell.alignment = Alignment(horizontal="center")
 
         # B列: 全平日合計ヘッダ
-        total_fill = PatternFill("solid", fgColor="1A5276")
         cell = ws.cell(row=hr, column=2, value="全平日合計")
         cell.font = header_font
-        cell.fill = total_fill
+        cell.fill = dark_fill
         cell.border = thin_border
         cell.alignment = Alignment(horizontal="center")
 
-        # C列以降: 日付ヘッダ
+        # C列: 全平日平均ヘッダ
+        cell = ws.cell(row=hr, column=3, value="全平日平均")
+        cell.font = header_font
+        cell.fill = dark_fill
+        cell.border = thin_border
+        cell.alignment = Alignment(horizontal="center")
+
+        # D列以降: 日付ヘッダ
         for di, d in enumerate(dates):
-            cell = ws.cell(row=hr, column=3 + di, value=d)
+            cell = ws.cell(row=hr, column=4 + di, value=d)
             cell.font = header_font
             cell.fill = header_fill
             cell.border = thin_border
             cell.alignment = Alignment(horizontal="center")
 
         # データ行
+        bold_font = Font(name="Meiryo UI", size=9, bold=True)
         for si, snap in enumerate(snapshot_times):
             r = hr + 1 + si
             time_label = f"{snap.hour}:{snap.minute:02d}"
@@ -280,21 +291,28 @@ def main():
             cell.border = thin_border
             cell.alignment = Alignment(horizontal="center")
 
-            # B列: 全平日合計（全日付の合算）
+            # B列: 全平日合計
             day_total = 0.0
             for d in dates:
                 vals = by_day_data.get(d, [0.0] * len(snapshot_times))
                 day_total += vals[si] if si < len(vals) else 0.0
             cell = ws.cell(row=r, column=2, value=day_total)
-            cell.font = Font(name="Meiryo UI", size=9, bold=True)
+            cell.font = bold_font
             cell.border = thin_border
             cell.number_format = "0.0"
 
-            # C列以降: 日別値
+            # C列: 全平日平均
+            avg = round(day_total / num_weekdays, 2) if num_weekdays > 0 else 0.0
+            cell = ws.cell(row=r, column=3, value=avg)
+            cell.font = bold_font
+            cell.border = thin_border
+            cell.number_format = "0.00"
+
+            # D列以降: 日別値
             for di, d in enumerate(dates):
                 vals = by_day_data.get(d, [0.0] * len(snapshot_times))
                 val = vals[si] if si < len(vals) else 0.0
-                cell = ws.cell(row=r, column=3 + di, value=val)
+                cell = ws.cell(row=r, column=4 + di, value=val)
                 cell.font = data_font
                 cell.border = thin_border
                 cell.number_format = "0.0"
@@ -304,8 +322,9 @@ def main():
     # 列幅設定
     ws_verify.column_dimensions["A"].width = 10
     ws_verify.column_dimensions["B"].width = 14
+    ws_verify.column_dimensions["C"].width = 14
     for di in range(len(all_dates)):
-        col_letter = openpyxl.utils.get_column_letter(3 + di)
+        col_letter = openpyxl.utils.get_column_letter(4 + di)
         ws_verify.column_dimensions[col_letter].width = 12
 
     # 4セクション書き込み
@@ -350,6 +369,90 @@ def main():
     total = len(all_surgery)
     ratio = non_scheduled / total * 100 if total > 0 else 0
     print(f"\n3. 臨時+緊急が全体に占める割合: {non_scheduled}/{total} = {ratio:.1f}%")
+
+    # --- サンプリング検証（20か所） ---
+    import random
+    random.seed(42)  # 再現性のため固定シード
+
+    # 区分名とデータの対応
+    category_map = {
+        "定時": sched_by_day,
+        "臨時": urgent_by_day,
+        "緊急": emerg_by_day,
+        "合計": all_by_day,
+    }
+    category_filter = {
+        "定時": lambda r: r["category"] == "定時",
+        "臨時": lambda r: r["category"] == "臨時",
+        "緊急": lambda r: r["category"] == "緊急",
+        "合計": lambda r: True,
+    }
+
+    # サンプリング: 5日 × 4時間帯（午前2+午後2）= 20か所
+    sample_dates = random.sample(all_dates, min(5, len(all_dates)))
+    am_indices = [i for i, s in enumerate(snapshot_times) if s.hour < 12]
+    pm_indices = [i for i, s in enumerate(snapshot_times) if 12 <= s.hour < 20]
+    categories = ["定時", "臨時", "緊急", "合計"]
+
+    samples = []
+    for d in sample_dates:
+        am_picks = random.sample(am_indices, min(2, len(am_indices)))
+        pm_picks = random.sample(pm_indices, min(2, len(pm_indices)))
+        for si in am_picks + pm_picks:
+            cat = random.choice(categories)
+            samples.append((d, si, cat))
+
+    # 20か所に絞る
+    samples = samples[:20]
+
+    print(f"\n=== サンプリング検証（{len(samples)}か所） ===")
+    ok_count = 0
+    for idx, (d, si, cat) in enumerate(samples):
+        snap = snapshot_times[si]
+        snap_min = to_minutes(snap)
+        interval_a = snap_min - 14
+        interval_b = snap_min + 15
+        time_str = f"{snap.hour}:{snap.minute:02d}"
+
+        # 検証シートの値
+        by_day = category_map[cat]
+        sheet_val = by_day.get(d, [0.0] * len(snapshot_times))[si]
+
+        # 元データから手計算
+        cat_filter = category_filter[cat]
+        day_records = [r for r in records_filtered
+                       if r["date"] == d and r["room"] in room_weight and cat_filter(r)]
+        calc_val = 0.0
+        matching_ops = []
+        for r in day_records:
+            start_min = to_minutes(r["start"])
+            end_min = to_minutes(r["end"])
+            if interval_a <= end_min and start_min <= interval_b:
+                w = room_weight[r["room"]]
+                calc_val += w
+                matching_ops.append(r)
+
+        match = abs(sheet_val - calc_val) < 0.01
+        status = "OK" if match else "NG"
+        if match:
+            ok_count += 1
+
+        # 日付表示を短縮
+        date_short = d.replace("2025/", "") if "2025/" in d else d
+        print(f"#{idx+1:2d}  {date_short} {time_str} {cat:4s}  "
+              f"検証シート={sheet_val:.1f}  手計算={calc_val:.1f}  {status}")
+
+        if not match:
+            print(f"     *** 不一致! 詳細:")
+            for r in matching_ops:
+                s = to_minutes(r["start"])
+                e = to_minutes(r["end"])
+                print(f"         部屋={r['room']} 開始={s//60}:{s%60:02d} "
+                      f"終了={e//60}:{e%60:02d} 区分={r['category']} "
+                      f"ウェイト={room_weight[r['room']]}")
+
+    print(f"\n結果: {ok_count}/{len(samples)} 一致"
+          f"（{ok_count/len(samples)*100:.0f}%）")
 
     # --- 別名保存 ---
     wb.save(OUTPUT_FILE)
