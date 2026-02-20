@@ -180,6 +180,156 @@ def main():
         wd_days = set(r["date"] for r in weekday_records)
         print(f"  {weekday_name}: 全手術={wd_all_results}, 予定={wd_sched_results}, 対象日数={len(wd_days)}")
 
+    # --- 検証用シート（定時・臨時・緊急別の部屋数）---
+    def count_rooms_by_day(data):
+        """日別×スナップショット時刻の稼働室数（ウェイト付き）を返す: {date: [val, ...]}"""
+        days = {}
+        for r in data:
+            d = r["date"]
+            if d not in days:
+                days[d] = []
+            days[d].append(r)
+
+        result = {}
+        for day_str, day_records in sorted(days.items()):
+            counts = []
+            for si, snap in enumerate(snapshot_times):
+                snap_min = to_minutes(snap)
+                interval_a = snap_min - 14
+                interval_b = snap_min + 15
+                count = 0.0
+                for r in day_records:
+                    room = r["room"]
+                    if room not in room_weight:
+                        continue
+                    start_min = to_minutes(r["start"])
+                    end_min = to_minutes(r["end"])
+                    if interval_a <= end_min and start_min <= interval_b:
+                        count += room_weight[room]
+                counts.append(count)
+            result[day_str] = counts
+        return result
+
+    # 区分別データ
+    sched_data = [r for r in records_filtered if r["room"] in room_weight and r["category"] == "定時"]
+    urgent_data = [r for r in records_filtered if r["room"] in room_weight and r["category"] == "臨時"]
+    emerg_data = [r for r in records_filtered if r["room"] in room_weight and r["category"] == "緊急"]
+
+    sched_by_day = count_rooms_by_day(sched_data)
+    urgent_by_day = count_rooms_by_day(urgent_data)
+    emerg_by_day = count_rooms_by_day(emerg_data)
+    all_by_day = count_rooms_by_day(all_surgery)
+
+    # 全日付の和集合（ソート済み）
+    all_dates = sorted(set(list(sched_by_day.keys()) + list(urgent_by_day.keys()) +
+                           list(emerg_by_day.keys()) + list(all_by_day.keys())))
+
+    # 既存シートがあれば削除して再作成
+    verify_sheet_name = "検証_定時臨時緊急別"
+    if verify_sheet_name in wb.sheetnames:
+        del wb[verify_sheet_name]
+    ws_verify = wb.create_sheet(verify_sheet_name)
+
+    from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
+
+    header_font = Font(name="Meiryo UI", size=9, bold=True, color="FFFFFF")
+    header_fill = PatternFill("solid", fgColor="2980B9")
+    label_font = Font(name="Meiryo UI", size=10, bold=True)
+    data_font = Font(name="Meiryo UI", size=9)
+    thin_border = Border(
+        left=Side(style="thin"), right=Side(style="thin"),
+        top=Side(style="thin"), bottom=Side(style="thin"),
+    )
+
+    def write_section(ws, start_row, section_label, by_day_data, dates):
+        """1セクションを書き込み、最終行+1を返す"""
+        # セクションラベル
+        cell = ws.cell(row=start_row, column=1, value=section_label)
+        cell.font = label_font
+
+        # ヘッダ行
+        hr = start_row + 1
+        cell = ws.cell(row=hr, column=1, value="時間帯")
+        cell.font = header_font
+        cell.fill = header_fill
+        cell.border = thin_border
+        cell.alignment = Alignment(horizontal="center")
+
+        for di, d in enumerate(dates):
+            cell = ws.cell(row=hr, column=2 + di, value=d)
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.border = thin_border
+            cell.alignment = Alignment(horizontal="center")
+
+        # データ行
+        for si, snap in enumerate(snapshot_times):
+            r = hr + 1 + si
+            time_label = f"{snap.hour}:{snap.minute:02d}"
+            cell = ws.cell(row=r, column=1, value=time_label)
+            cell.font = data_font
+            cell.border = thin_border
+            cell.alignment = Alignment(horizontal="center")
+
+            for di, d in enumerate(dates):
+                vals = by_day_data.get(d, [0.0] * len(snapshot_times))
+                val = vals[si] if si < len(vals) else 0.0
+                cell = ws.cell(row=r, column=2 + di, value=val)
+                cell.font = data_font
+                cell.border = thin_border
+                cell.number_format = "0.0"
+
+        return hr + 1 + len(snapshot_times) + 1  # 次セクション開始行（1行空け）
+
+    # 列幅設定
+    ws_verify.column_dimensions["A"].width = 10
+    for di in range(len(all_dates)):
+        col_letter = openpyxl.utils.get_column_letter(2 + di)
+        ws_verify.column_dimensions[col_letter].width = 12
+
+    # 4セクション書き込み
+    current_row = 1
+    current_row = write_section(ws_verify, current_row, "【定時のみ】", sched_by_day, all_dates)
+    current_row = write_section(ws_verify, current_row, "【臨時のみ】", urgent_by_day, all_dates)
+    current_row = write_section(ws_verify, current_row, "【緊急のみ】", emerg_by_day, all_dates)
+    current_row = write_section(ws_verify, current_row, "【合計（検証用）】", all_by_day, all_dates)
+
+    print(f"\n検証シート '{verify_sheet_name}' を作成しました")
+
+    # --- 検証：定時+臨時+緊急 = 全手術か ---
+    mismatch_count = 0
+    total_cells = 0
+    for di, d in enumerate(all_dates):
+        s_vals = sched_by_day.get(d, [0.0] * len(snapshot_times))
+        u_vals = urgent_by_day.get(d, [0.0] * len(snapshot_times))
+        e_vals = emerg_by_day.get(d, [0.0] * len(snapshot_times))
+        a_vals = all_by_day.get(d, [0.0] * len(snapshot_times))
+        for si in range(len(snapshot_times)):
+            total_cells += 1
+            s = s_vals[si] if si < len(s_vals) else 0.0
+            u = u_vals[si] if si < len(u_vals) else 0.0
+            e = e_vals[si] if si < len(e_vals) else 0.0
+            a = a_vals[si] if si < len(a_vals) else 0.0
+            if abs((s + u + e) - a) > 0.01:
+                mismatch_count += 1
+
+    print(f"\n=== 検証結果 ===")
+    print(f"1. 定時+臨時+緊急 = 全手術 の一致チェック: "
+          f"{'全セル一致 OK' if mismatch_count == 0 else f'{mismatch_count}/{total_cells} セル不一致'}")
+
+    # 臨時+緊急の割合
+    print(f"\n2. 件数内訳:")
+    print(f"   定時: {len(sched_data)} 件")
+    print(f"   臨時: {len(urgent_data)} 件")
+    print(f"   緊急: {len(emerg_data)} 件")
+    print(f"   合計: {len(sched_data) + len(urgent_data) + len(emerg_data)} 件 "
+          f"(全手術={len(all_surgery)} 件)")
+
+    non_scheduled = len(urgent_data) + len(emerg_data)
+    total = len(all_surgery)
+    ratio = non_scheduled / total * 100 if total > 0 else 0
+    print(f"\n3. 臨時+緊急が全体に占める割合: {non_scheduled}/{total} = {ratio:.1f}%")
+
     # --- 別名保存 ---
     wb.save(OUTPUT_FILE)
     print(f"\n計算完了: {OUTPUT_FILE}")
