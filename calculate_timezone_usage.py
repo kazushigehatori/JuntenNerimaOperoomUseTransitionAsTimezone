@@ -118,7 +118,7 @@ def main():
                 snap_min = to_minutes(snap)
                 interval_a = snap_min - 14  # 計測区間開始
                 interval_b = snap_min + 15  # 計測区間終了
-                count = 0.0
+                room_used = set()
                 for r in day_records:
                     room = r["room"]
                     if room not in room_weight:
@@ -127,7 +127,8 @@ def main():
                     end_min = to_minutes(r["end"])
                     # 閉区間 [A,B] と [C,D] の重なり判定
                     if interval_a <= end_min and start_min <= interval_b:
-                        count += room_weight[room]
+                        room_used.add(room)
+                count = sum(room_weight[rm] for rm in room_used)
                 totals[si] += count
 
         averages = [round(t / num_days, 2) for t in totals]
@@ -197,7 +198,7 @@ def main():
                 snap_min = to_minutes(snap)
                 interval_a = snap_min - 14
                 interval_b = snap_min + 15
-                count = 0.0
+                room_used = set()
                 for r in day_records:
                     room = r["room"]
                     if room not in room_weight:
@@ -205,7 +206,8 @@ def main():
                     start_min = to_minutes(r["start"])
                     end_min = to_minutes(r["end"])
                     if interval_a <= end_min and start_min <= interval_b:
-                        count += room_weight[room]
+                        room_used.add(room)
+                count = sum(room_weight[rm] for rm in room_used)
                 counts.append(count)
             result[day_str] = counts
         return result
@@ -354,8 +356,11 @@ def main():
                 mismatch_count += 1
 
     print(f"\n=== 検証結果 ===")
-    print(f"1. 定時+臨時+緊急 = 全手術 の一致チェック: "
-          f"{'全セル一致 OK' if mismatch_count == 0 else f'{mismatch_count}/{total_cells} セル不一致'}")
+    print(f"1. 定時+臨時+緊急 vs 全手術 の一致チェック: "
+          f"{'全セル一致 OK' if mismatch_count == 0 else f'{mismatch_count}/{total_cells} セル差異あり'}")
+    if mismatch_count > 0:
+        print(f"   (同一部屋・同一時間帯で異なる区分の手術が入れ替わる場合、"
+              f"各区分別では各1回カウントされるが合計では1回のみのため差異が生じる。正常動作)")
 
     # 臨時+緊急の割合
     print(f"\n2. 件数内訳:")
@@ -418,19 +423,19 @@ def main():
         by_day = category_map[cat]
         sheet_val = by_day.get(d, [0.0] * len(snapshot_times))[si]
 
-        # 元データから手計算
+        # 元データから手計算（部屋ごとの上限あり）
         cat_filter = category_filter[cat]
         day_records = [r for r in records_filtered
                        if r["date"] == d and r["room"] in room_weight and cat_filter(r)]
-        calc_val = 0.0
+        room_used = set()
         matching_ops = []
         for r in day_records:
             start_min = to_minutes(r["start"])
             end_min = to_minutes(r["end"])
             if interval_a <= end_min and start_min <= interval_b:
-                w = room_weight[r["room"]]
-                calc_val += w
+                room_used.add(r["room"])
                 matching_ops.append(r)
+        calc_val = sum(room_weight[rm] for rm in room_used)
 
         match = abs(sheet_val - calc_val) < 0.01
         status = "OK" if match else "NG"
@@ -453,6 +458,27 @@ def main():
 
     print(f"\n結果: {ok_count}/{len(samples)} 一致"
           f"（{ok_count/len(samples)*100:.0f}%）")
+
+    # --- 最大値チェック ---
+    weight_sum = sum(room_weight.values())
+    max_val = 0.0
+    max_info = ""
+    over_count = 0
+    for d in all_dates:
+        for cat_name, by_day in [("定時", sched_by_day), ("臨時", urgent_by_day),
+                                  ("緊急", emerg_by_day), ("合計", all_by_day)]:
+            vals = by_day.get(d, [0.0] * len(snapshot_times))
+            for si, v in enumerate(vals):
+                if v > max_val:
+                    max_val = v
+                    snap = snapshot_times[si]
+                    max_info = f"{d} {snap.hour}:{snap.minute:02d} {cat_name}"
+                if v > weight_sum:
+                    over_count += 1
+    print(f"\n=== 最大値チェック ===")
+    print(f"ウェイト合計(上限): {weight_sum}")
+    print(f"全セル最大値: {max_val:.1f} ({max_info})")
+    print(f"上限超過セル数: {over_count}")
 
     # --- 別名保存 ---
     wb.save(OUTPUT_FILE)
