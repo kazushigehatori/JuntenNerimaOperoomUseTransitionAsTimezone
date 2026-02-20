@@ -255,8 +255,17 @@ def main():
         cell.border = thin_border
         cell.alignment = Alignment(horizontal="center")
 
+        # B列: 全平日合計ヘッダ
+        total_fill = PatternFill("solid", fgColor="1A5276")
+        cell = ws.cell(row=hr, column=2, value="全平日合計")
+        cell.font = header_font
+        cell.fill = total_fill
+        cell.border = thin_border
+        cell.alignment = Alignment(horizontal="center")
+
+        # C列以降: 日付ヘッダ
         for di, d in enumerate(dates):
-            cell = ws.cell(row=hr, column=2 + di, value=d)
+            cell = ws.cell(row=hr, column=3 + di, value=d)
             cell.font = header_font
             cell.fill = header_fill
             cell.border = thin_border
@@ -271,10 +280,21 @@ def main():
             cell.border = thin_border
             cell.alignment = Alignment(horizontal="center")
 
+            # B列: 全平日合計（全日付の合算）
+            day_total = 0.0
+            for d in dates:
+                vals = by_day_data.get(d, [0.0] * len(snapshot_times))
+                day_total += vals[si] if si < len(vals) else 0.0
+            cell = ws.cell(row=r, column=2, value=day_total)
+            cell.font = Font(name="Meiryo UI", size=9, bold=True)
+            cell.border = thin_border
+            cell.number_format = "0.0"
+
+            # C列以降: 日別値
             for di, d in enumerate(dates):
                 vals = by_day_data.get(d, [0.0] * len(snapshot_times))
                 val = vals[si] if si < len(vals) else 0.0
-                cell = ws.cell(row=r, column=2 + di, value=val)
+                cell = ws.cell(row=r, column=3 + di, value=val)
                 cell.font = data_font
                 cell.border = thin_border
                 cell.number_format = "0.0"
@@ -283,8 +303,9 @@ def main():
 
     # 列幅設定
     ws_verify.column_dimensions["A"].width = 10
+    ws_verify.column_dimensions["B"].width = 14
     for di in range(len(all_dates)):
-        col_letter = openpyxl.utils.get_column_letter(2 + di)
+        col_letter = openpyxl.utils.get_column_letter(3 + di)
         ws_verify.column_dimensions[col_letter].width = 12
 
     # 4セクション書き込み
