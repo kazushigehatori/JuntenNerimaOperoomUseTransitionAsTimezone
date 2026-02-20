@@ -1,5 +1,5 @@
 """
-HOGY社方式との差異調査 — 全26試行の稼働率比較
+HOGY社方式との差異調査 — 全30試行の稼働率比較
 ==============================================
 弊社（メドライン）計算: 76.0%
 HOGY社計算: 67.9%
@@ -199,7 +199,49 @@ def main():
                 numerator += count
         return (numerator / denominator * 100) if denominator > 0 else 0.0
 
-    # ========== 全26試行 ==========
+    def calc_overlap_merged_1ab(data, slots, denom_rooms, offset_a, offset_b,
+                                room_1a="01A", room_1b="01B"):
+        """区間重なり方式 + 1A/1B統合カウント
+        1A or 1Bが使用中 → 1室、両方使用中 → やはり1室（上限1）
+        他の部屋は各1室。分母=denom_rooms。
+        """
+        target_rooms = set(room_weight.keys())
+        other_rooms = target_rooms - {room_1a, room_1b}
+        numerator = 0.0
+        denominator = denom_rooms * num_days * len(slots)
+        for d in all_dates:
+            day_recs = [r for r in data if r["date"] == d]
+            for snap in slots:
+                snap_min = to_minutes(snap)
+                ia = snap_min + offset_a
+                ib = snap_min + offset_b
+                count = 0.0
+                # 他の部屋: 各1室
+                for r in day_recs:
+                    room = r["room"]
+                    if room not in other_rooms:
+                        continue
+                    s = to_minutes(r["start"])
+                    e = to_minutes(r["end"])
+                    if ia <= e and s <= ib:
+                        count += 1.0
+                # 1A/1B統合: どちらか使用=1, 両方=1
+                ab_used = False
+                for r in day_recs:
+                    room = r["room"]
+                    if room not in (room_1a, room_1b):
+                        continue
+                    s = to_minutes(r["start"])
+                    e = to_minutes(r["end"])
+                    if ia <= e and s <= ib:
+                        ab_used = True
+                        break
+                if ab_used:
+                    count += 1.0
+                numerator += count
+        return (numerator / denominator * 100) if denominator > 0 else 0.0
+
+    # ========== 全30試行 ==========
     target = 67.9
 
     # trials: (名前, 区間方式, ウェイト, 対象手術, 時間帯, 稼働率)
@@ -299,6 +341,25 @@ def main():
     r26 = calc_overlap_fixed_denom(all_surgery, slots_16, room_weight, 12, 0, +29)
     trials.append(("試行26", "HOGY(0/+29)", "分母=12室", "全手術", "9:00-16:30", r26))
 
+    # --- 試行27〜30 (1A/1B統合方式) ---
+
+    # 試行27: HOGY区間 + 全手術 + 1A/1B統合(使用=1,分母=10) + 9:00-16:30
+    r27 = calc_overlap_merged_1ab(all_surgery, slots_16, 10, 0, +29)
+    trials.append(("試行27", "HOGY(0/+29)", "1AB統合,分母10", "全手術", "9:00-16:30", r27))
+
+    # 試行28: HOGY区間 + 全手術 + 1A/1B統合(使用=1,分母=9) + 9:00-16:30
+    # ※分母9 = 1A/1Bで1室 + 残り8室
+    r28 = calc_overlap_merged_1ab(all_surgery, slots_16, 9, 0, +29)
+    trials.append(("試行28", "HOGY(0/+29)", "1AB統合,分母9", "全手術", "9:00-16:30", r28))
+
+    # 試行29: HOGY区間 + 定時のみ + 1A/1B統合(使用=1,分母=10) + 9:00-16:30
+    r29 = calc_overlap_merged_1ab(scheduled_only, slots_16, 10, 0, +29)
+    trials.append(("試行29", "HOGY(0/+29)", "1AB統合,分母10", "定時のみ", "9:00-16:30", r29))
+
+    # 試行30: HOGY区間 + 定時のみ + 1A/1B統合(使用=1,分母=9) + 9:00-16:30
+    r30 = calc_overlap_merged_1ab(scheduled_only, slots_16, 9, 0, +29)
+    trials.append(("試行30", "HOGY(0/+29)", "1AB統合,分母9", "定時のみ", "9:00-16:30", r30))
+
     # ========== 全試行を67.9%に近い順でソート ==========
     print(f"\n{'='*110}")
     print(f"=== 全試行結果（67.9%に近い順） ===")
@@ -321,7 +382,7 @@ def main():
 
     # ========== 新規試行15-26のみ抽出 ==========
     print(f"\n{'='*110}")
-    print(f"=== 新規試行15-26（67.9%に近い順） ===")
+    print(f"=== 新規試行15-30（67.9%に近い順） ===")
     print(f"{'='*110}")
     print(f"{'順位':4s} {'試行':8s} {'区間方式':16s} {'ウェイト':14s} {'対象手術':12s} "
           f"{'時間帯':12s} {'稼働率':8s} {'差':8s}")
@@ -340,7 +401,7 @@ def main():
     print(f"\n{'='*80}")
     print("=== 結論 ===")
     print(f"{'='*80}")
-    print(f"全26試行中、最も67.9%に近い: {best[0]} = {best[5]:.1f}%（差{abs(best[5]-target):.1f}pt）")
+    print(f"全30試行中、最も67.9%に近い: {best[0]} = {best[5]:.1f}%（差{abs(best[5]-target):.1f}pt）")
     print(f"条件: {best[1]} + {best[2]} + {best[3]} + {best[4]}")
 
     # 上位3つ
