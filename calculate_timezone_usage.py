@@ -1,11 +1,13 @@
 """
-時間帯別稼働推移 計算スクリプト
-================================
-手術実施データから、30分おきのスナップショット時刻を中心とした
-計測区間（-14分〜+15分）で何室稼働中かを計算し、計算結果シートに出力します。
+時間帯別稼働推移 計算スクリプト v4.0
+====================================
+手術実施データから、1分毎のサンプリング（8:00〜20:29）で各手術室の使用有無を判定し、
+30分スナップショット（8:00〜20:00、25個）ごとに30個の1分サンプルの平均使用室数を算出します。
 
-グラフは元ファイルの「グラフ表示」シートに事前設定済みのため、
-計算結果が書き込まれると自動でグラフに反映されます。
+変更点（v4.0）:
+- 計測区間方式（±14/+15分）→ 1分サンプリング + 30分平均方式
+- 01Bの使用は01Aとしてカウント（01Bウェイト=0の場合、01Aに統合）
+- 全室ウェイト1.0（定義シートから読み込み）
 
 使い方:
     python calculate_timezone_usage.py
@@ -48,15 +50,38 @@ def main():
     # --- 定義シートから設定読み込み ---
     ws_def = wb["定義"]
 
-    # 対象手術室とウェイト
-    room_weight = {}
+    # 対象手術室とウェイト（全行読み込み）
+    room_weight_raw = {}
     for row in ws_def.iter_rows(min_row=2, max_row=20, min_col=1, max_col=2, values_only=True):
         if row[0] is not None and row[1] is not None:
             try:
-                room_weight[str(row[0])] = float(row[1])
+                room_weight_raw[str(row[0])] = float(row[1])
             except (ValueError, TypeError):
                 break
+
+    # 01B統合ロジック: ウェイト0の部屋を特定し、統合先を決定
+    # 01Bウェイト=0 → 01Bの手術データを01Aに統合
+    merge_map = {}  # {統合元部屋名: 統合先部屋名}
+    room_weight = {}  # 実際に集計に使うウェイト（ウェイト>0の部屋のみ）
+
+    for room_name, weight in room_weight_raw.items():
+        if weight == 0:
+            # ウェイト0の部屋 → 統合先を探す
+            # 01B → 01A のように、末尾アルファベット違いの部屋を探す
+            base = room_name[:-1] if room_name[-1].isalpha() else None
+            if base:
+                for candidate, cw in room_weight_raw.items():
+                    if candidate != room_name and candidate.startswith(base) and cw > 0:
+                        merge_map[room_name] = candidate
+                        break
+            if room_name not in merge_map:
+                print(f"警告: ウェイト0の部屋 '{room_name}' の統合先が見つかりません。無視します。")
+        else:
+            room_weight[room_name] = weight
+
     print(f"対象手術室: {room_weight}")
+    if merge_map:
+        print(f"部屋統合: {merge_map}")
 
     # 除外曜日
     exclude_weekdays = set()
@@ -75,10 +100,14 @@ def main():
     for row in ws_data.iter_rows(min_row=2, max_row=ws_data.max_row, values_only=True):
         mgmt_no, op_date, weekday, room, start_time, end_time, category = row
         if room is not None:
+            room_str = str(room)
+            # 部屋統合: 01B → 01A
+            if room_str in merge_map:
+                room_str = merge_map[room_str]
             records.append({
                 "date": str(op_date) if op_date else "",
                 "weekday": str(weekday) if weekday else "",
-                "room": str(room),
+                "room": room_str,
                 "start": start_time,
                 "end": end_time,
                 "category": str(category) if category else "",
@@ -97,9 +126,12 @@ def main():
         snapshot_times.append(dt.time(h, 30))
     snapshot_times.append(dt.time(20, 0))
 
-    # --- 集計関数 ---
+    # --- 1分サンプリング + 30分平均集計関数 ---
     def count_rooms_at_snapshots(data):
-        """各スナップショット時刻の計測区間（-14分〜+15分）での稼働室数（ウェイト付き）を日平均で算出"""
+        """
+        各スナップショット時刻の30分間（+0〜+29分）について、
+        1分毎のサンプリングで使用室数を計算し、30個の平均を日平均で算出。
+        """
         days = {}
         for r in data:
             d = r["date"]
@@ -116,20 +148,27 @@ def main():
         for day_str, day_records in days.items():
             for si, snap in enumerate(snapshot_times):
                 snap_min = to_minutes(snap)
-                interval_a = snap_min - 14  # 計測区間開始
-                interval_b = snap_min + 15  # 計測区間終了
-                room_used = set()
-                for r in day_records:
-                    room = r["room"]
-                    if room not in room_weight:
-                        continue
-                    start_min = to_minutes(r["start"])
-                    end_min = to_minutes(r["end"])
-                    # 閉区間 [A,B] と [C,D] の重なり判定
-                    if interval_a <= end_min and start_min <= interval_b:
-                        room_used.add(room)
-                count = sum(room_weight[rm] for rm in room_used)
-                totals[si] += count
+                # 30分間の1分サンプリング: snap_min + 0, +1, ..., +29
+                minute_sum = 0.0
+                for offset in range(30):
+                    sample_min = snap_min + offset
+                    # 各部屋の使用有無を判定
+                    room_used = set()
+                    for r in day_records:
+                        room = r["room"]
+                        if room not in room_weight:
+                            continue
+                        start_min = to_minutes(r["start"])
+                        end_min = to_minutes(r["end"])
+                        # 使用中判定: 入室時刻 ≤ sample_min ≤ 麻酔終了時刻
+                        if start_min <= sample_min <= end_min:
+                            room_used.add(room)
+                    # 使用室数 = 使用中の部屋のウェイト合計（各部屋上限1回）
+                    count = sum(room_weight[rm] for rm in room_used)
+                    minute_sum += count
+                # 30分間の平均
+                snapshot_avg = minute_sum / 30.0
+                totals[si] += snapshot_avg
 
         averages = [round(t / num_days, 2) for t in totals]
         return averages
@@ -183,7 +222,7 @@ def main():
 
     # --- 検証用シート（定時・臨時・緊急別の部屋数）---
     def count_rooms_by_day(data):
-        """日別×スナップショット時刻の稼働室数（ウェイト付き）を返す: {date: [val, ...]}"""
+        """日別×スナップショット時刻の稼働室数（1分サンプリング30分平均）を返す: {date: [val, ...]}"""
         days = {}
         for r in data:
             d = r["date"]
@@ -196,19 +235,22 @@ def main():
             counts = []
             for si, snap in enumerate(snapshot_times):
                 snap_min = to_minutes(snap)
-                interval_a = snap_min - 14
-                interval_b = snap_min + 15
-                room_used = set()
-                for r in day_records:
-                    room = r["room"]
-                    if room not in room_weight:
-                        continue
-                    start_min = to_minutes(r["start"])
-                    end_min = to_minutes(r["end"])
-                    if interval_a <= end_min and start_min <= interval_b:
-                        room_used.add(room)
-                count = sum(room_weight[rm] for rm in room_used)
-                counts.append(count)
+                minute_sum = 0.0
+                for offset in range(30):
+                    sample_min = snap_min + offset
+                    room_used = set()
+                    for r in day_records:
+                        room = r["room"]
+                        if room not in room_weight:
+                            continue
+                        start_min = to_minutes(r["start"])
+                        end_min = to_minutes(r["end"])
+                        if start_min <= sample_min <= end_min:
+                            room_used.add(room)
+                    count = sum(room_weight[rm] for rm in room_used)
+                    minute_sum += count
+                snapshot_avg = round(minute_sum / 30.0, 4)
+                counts.append(snapshot_avg)
             result[day_str] = counts
         return result
 
@@ -317,7 +359,7 @@ def main():
                 cell = ws.cell(row=r, column=4 + di, value=val)
                 cell.font = data_font
                 cell.border = thin_border
-                cell.number_format = "0.0"
+                cell.number_format = "0.00"
 
         return hr + 1 + len(snapshot_times) + 1  # 次セクション開始行（1行空け）
 
@@ -338,7 +380,7 @@ def main():
 
     print(f"\n検証シート '{verify_sheet_name}' を作成しました")
 
-    # --- 検証：定時+臨時+緊急 = 全手術か ---
+    # --- 検証：定時+臨時+緊急 ≒ 全手術か ---
     mismatch_count = 0
     total_cells = 0
     for di, d in enumerate(all_dates):
@@ -362,7 +404,7 @@ def main():
         print(f"   (同一部屋・同一時間帯で異なる区分の手術が入れ替わる場合、"
               f"各区分別では各1回カウントされるが合計では1回のみのため差異が生じる。正常動作)")
 
-    # 臨時+緊急の割合
+    # 件数内訳
     print(f"\n2. 件数内訳:")
     print(f"   定時: {len(sched_data)} 件")
     print(f"   臨時: {len(urgent_data)} 件")
@@ -377,9 +419,8 @@ def main():
 
     # --- サンプリング検証（20か所） ---
     import random
-    random.seed(42)  # 再現性のため固定シード
+    random.seed(42)
 
-    # 区分名とデータの対応
     category_map = {
         "定時": sched_by_day,
         "臨時": urgent_by_day,
@@ -393,7 +434,6 @@ def main():
         "合計": lambda r: True,
     }
 
-    # サンプリング: 5日 × 4時間帯（午前2+午後2）= 20か所
     sample_dates = random.sample(all_dates, min(5, len(all_dates)))
     am_indices = [i for i, s in enumerate(snapshot_times) if s.hour < 12]
     pm_indices = [i for i, s in enumerate(snapshot_times) if 12 <= s.hour < 20]
@@ -407,7 +447,6 @@ def main():
             cat = random.choice(categories)
             samples.append((d, si, cat))
 
-    # 20か所に絞る
     samples = samples[:20]
 
     print(f"\n=== サンプリング検証（{len(samples)}か所） ===")
@@ -415,46 +454,39 @@ def main():
     for idx, (d, si, cat) in enumerate(samples):
         snap = snapshot_times[si]
         snap_min = to_minutes(snap)
-        interval_a = snap_min - 14
-        interval_b = snap_min + 15
         time_str = f"{snap.hour}:{snap.minute:02d}"
 
         # 検証シートの値
         by_day = category_map[cat]
         sheet_val = by_day.get(d, [0.0] * len(snapshot_times))[si]
 
-        # 元データから手計算（部屋ごとの上限あり）
+        # 元データから手計算（1分サンプリング30分平均）
         cat_filter = category_filter[cat]
         day_records = [r for r in records_filtered
                        if r["date"] == d and r["room"] in room_weight and cat_filter(r)]
-        room_used = set()
-        matching_ops = []
-        for r in day_records:
-            start_min = to_minutes(r["start"])
-            end_min = to_minutes(r["end"])
-            if interval_a <= end_min and start_min <= interval_b:
-                room_used.add(r["room"])
-                matching_ops.append(r)
-        calc_val = sum(room_weight[rm] for rm in room_used)
+        minute_sum = 0.0
+        for offset in range(30):
+            sample_min = snap_min + offset
+            room_used = set()
+            for r in day_records:
+                start_min = to_minutes(r["start"])
+                end_min = to_minutes(r["end"])
+                if start_min <= sample_min <= end_min:
+                    room_used.add(r["room"])
+            minute_sum += sum(room_weight[rm] for rm in room_used)
+        calc_val = round(minute_sum / 30.0, 4)
 
         match = abs(sheet_val - calc_val) < 0.01
         status = "OK" if match else "NG"
         if match:
             ok_count += 1
 
-        # 日付表示を短縮
         date_short = d.replace("2025/", "") if "2025/" in d else d
         print(f"#{idx+1:2d}  {date_short} {time_str} {cat:4s}  "
-              f"検証シート={sheet_val:.1f}  手計算={calc_val:.1f}  {status}")
+              f"検証シート={sheet_val:.4f}  手計算={calc_val:.4f}  {status}")
 
         if not match:
-            print(f"     *** 不一致! 詳細:")
-            for r in matching_ops:
-                s = to_minutes(r["start"])
-                e = to_minutes(r["end"])
-                print(f"         部屋={r['room']} 開始={s//60}:{s%60:02d} "
-                      f"終了={e//60}:{e%60:02d} 区分={r['category']} "
-                      f"ウェイト={room_weight[r['room']]}")
+            print(f"     *** 不一致!")
 
     print(f"\n結果: {ok_count}/{len(samples)} 一致"
           f"（{ok_count/len(samples)*100:.0f}%）")
@@ -473,11 +505,11 @@ def main():
                     max_val = v
                     snap = snapshot_times[si]
                     max_info = f"{d} {snap.hour}:{snap.minute:02d} {cat_name}"
-                if v > weight_sum:
+                if v > weight_sum + 0.01:
                     over_count += 1
     print(f"\n=== 最大値チェック ===")
     print(f"ウェイト合計(上限): {weight_sum}")
-    print(f"全セル最大値: {max_val:.1f} ({max_info})")
+    print(f"全セル最大値: {max_val:.4f} ({max_info})")
     print(f"上限超過セル数: {over_count}")
 
     # --- 別名保存 ---

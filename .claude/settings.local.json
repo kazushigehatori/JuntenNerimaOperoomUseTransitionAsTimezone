@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(pip install:*)",
+      "Bash(python:*)",
+      "Bash(pyinstaller:*)",
+      "Bash(ls:*)",
+      "Bash('C:\\\\Users\\\\user\\\\source\\\\repos\\\\JuntenNerimaOperoomUseTransitionAsTimezone\\\\dist\\\\時間帯別稼働推移.exe')",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git push:*)",
+      "Bash(git rm:*)",
+      "Bash(git pull:*)",
+      "Bash(git checkout:*)",
+      "Bash(git rebase:*)",
+      "Bash(gh repo create:*)",
+      "Bash(git remote set-url:*)",
+      "Bash(python3:*)"
+    ]
+  }
+}
